@@ -1,0 +1,110 @@
+(function() {
+    // 1. Generate Frontmatter in your requested format
+    const timestamp = new Date().toLocaleString('en-US', {
+        year: 'numeric', month: 'numeric', day: 'numeric',
+        hour: 'numeric', minute: 'numeric', second: 'numeric',
+        hour12: true
+    });
+    let output = `LMARENA EXPORT - ${timestamp}\n` + "=".repeat(50) + "\n\n";
+
+    // 2. Helper: Convert HTML Tables to Markdown
+    function tableToMarkdown(tableEl) {
+        const rows = Array.from(tableEl.querySelectorAll('tr'));
+        let markdownTable = "";
+        rows.forEach((row, index) => {
+            const cells = Array.from(row.querySelectorAll('th, td'));
+            const cellTexts = cells.map(c => c.innerText.trim().replace(/\n/g, ' '));
+            markdownTable += `| ${cellTexts.join(' | ')} |\n`;
+            if (index === 0) {
+                const separator = cellTexts.map(() => '---').join(' | ');
+                markdownTable += `| ${separator} |\n`;
+            }
+        });
+        return markdownTable + "\n";
+    }
+
+    // 3. Helper: Convert HTML Lists (UL/OL) to Markdown
+    function listToMarkdown(listEl) {
+        const items = Array.from(listEl.children).filter(el => el.tagName === 'LI');
+        const isOrdered = listEl.tagName === 'OL';
+        let markdownList = "";
+        items.forEach((li, index) => {
+            const prefix = isOrdered ? `${index + 1}. ` : "- ";
+            markdownList += `${prefix}${li.innerText.trim()}\n`;
+        });
+        return markdownList + "\n";
+    }
+
+    // 4. Select message blocks and reverse for chronological order
+    const blocks = Array.from(document.querySelectorAll('.mx-auto.max-w-\\[800px\\]'));
+    blocks.reverse();
+
+    let messageCount = 0;
+
+    blocks.forEach((block) => {
+        const userContainer = block.querySelector('.bg-surface-raised');
+        const assistantContainer = block.querySelector('.bg-surface-primary');
+
+        if (userContainer) {
+            const userText = userContainer.querySelector('.prose')?.innerText.trim();
+            if (userText) {
+                output += `### USER ###\n${userText}\n\n`;
+                messageCount++;
+            }
+        } 
+        else if (assistantContainer) {
+            const modelName = assistantContainer.querySelector('.truncate')?.innerText.trim() || "ASSISTANT";
+            output += `### ${modelName} ###\n`;
+
+            // A. Extract Thinking Traces
+            const trigger = assistantContainer.querySelector('button[aria-controls^="radix-"]');
+            if (trigger) {
+                const id = trigger.getAttribute('aria-controls');
+                const contentDiv = document.getElementById(id);
+                let thoughtTrace = contentDiv ? contentDiv.textContent.replace(/Thought for \d+ seconds/i, '').trim() : "";
+                if (thoughtTrace) {
+                    output += `<thinking>\n${thoughtTrace}\n</thinking>\n\n`;
+                }
+            }
+
+            // B. Parse Main Response Content
+            const mainProse = assistantContainer.querySelector('.prose');
+            if (mainProse) {
+                Array.from(mainProse.children).forEach(child => {
+                    const tag = child.tagName;
+                    
+                    // Tables
+                    const table = tag === 'TABLE' ? child : child.querySelector('table');
+                    if (table) {
+                        output += tableToMarkdown(table);
+                    } 
+                    // Lists (Bullets/Numbered)
+                    else if (tag === 'UL' || tag === 'OL') {
+                        output += listToMarkdown(child);
+                    }
+                    // Code Blocks
+                    else if (child.querySelector('[data-code-block="true"]') || tag === 'PRE') {
+                        const lang = child.querySelector('.text-text-secondary')?.innerText || "text";
+                        const code = child.querySelector('code')?.innerText || child.innerText;
+                        output += "```" + lang + "\n" + code.trim() + "\n```\n\n";
+                    } 
+                    // Headers
+                    else if (tag.startsWith('H') && tag.length === 2) {
+                        output += "#".repeat(parseInt(tag[1])) + " " + child.innerText.trim() + "\n\n";
+                    } 
+                    // Text / Paragraphs
+                    else {
+                        const text = child.innerText.trim();
+                        if (text) output += text + "\n\n";
+                    }
+                });
+            }
+
+            output += "=".repeat(30) + "\n\n";
+            messageCount++;
+        }
+    });
+
+    // 5. Download the formatted context file
+    const blob = new Blob([output], { type: 'text/plain' });
+    const a = document.createElement('a');
