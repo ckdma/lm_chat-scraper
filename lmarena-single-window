@@ -1,110 +1,119 @@
 (function() {
-    // 1. Generate Frontmatter in your requested format
-    const timestamp = new Date().toLocaleString('en-US', {
-        year: 'numeric', month: 'numeric', day: 'numeric',
-        hour: 'numeric', minute: 'numeric', second: 'numeric',
-        hour12: true
-    });
-    let output = `LMARENA EXPORT - ${timestamp}\n` + "=".repeat(50) + "\n\n";
+    // 1. Helpers
+    function toXmlTag(name) {
+        return name.toLowerCase().replace(/[^a-z0-9]/g, '_').replace(/^_+|_+$/g, '') || 'assistant';
+    }
 
-    // 2. Helper: Convert HTML Tables to Markdown
+    const processedElements = new WeakSet(); // THE KEY: Guarantees we never parse the same HTML block twice
+
     function tableToMarkdown(tableEl) {
         const rows = Array.from(tableEl.querySelectorAll('tr'));
-        let markdownTable = "";
+        let md = "";
         rows.forEach((row, index) => {
             const cells = Array.from(row.querySelectorAll('th, td'));
             const cellTexts = cells.map(c => c.innerText.trim().replace(/\n/g, ' '));
-            markdownTable += `| ${cellTexts.join(' | ')} |\n`;
-            if (index === 0) {
-                const separator = cellTexts.map(() => '---').join(' | ');
-                markdownTable += `| ${separator} |\n`;
-            }
+            md += `| ${cellTexts.join(' | ')} |\n`;
+            if (index === 0) md += `| ${cellTexts.map(() => '---').join(' | ')} |\n`;
         });
-        return markdownTable + "\n";
+        return md + "\n";
     }
 
-    // 3. Helper: Convert HTML Lists (UL/OL) to Markdown
     function listToMarkdown(listEl) {
         const items = Array.from(listEl.children).filter(el => el.tagName === 'LI');
         const isOrdered = listEl.tagName === 'OL';
-        let markdownList = "";
+        let md = "";
         items.forEach((li, index) => {
-            const prefix = isOrdered ? `${index + 1}. ` : "- ";
-            markdownList += `${prefix}${li.innerText.trim()}\n`;
+            md += `${isOrdered ? (index + 1) + '. ' : '- '}${li.innerText.trim()}\n`;
         });
-        return markdownList + "\n";
+        return md + "\n";
     }
 
-    // 4. Select message blocks and reverse for chronological order
-    const blocks = Array.from(document.querySelectorAll('.mx-auto.max-w-\\[800px\\]'));
-    blocks.reverse();
-
-    let messageCount = 0;
-
-    blocks.forEach((block) => {
-        const userContainer = block.querySelector('.bg-surface-raised');
-        const assistantContainer = block.querySelector('.bg-surface-primary');
-
-        if (userContainer) {
-            const userText = userContainer.querySelector('.prose')?.innerText.trim();
-            if (userText) {
-                output += `### USER ###\n${userText}\n\n`;
-                messageCount++;
+    function parseProse(container) {
+        const prose = container.querySelector('.prose');
+        if (!prose) return "";
+        
+        let textPart = "";
+        Array.from(prose.children).forEach(child => {
+            const tag = child.tagName;
+            const table = tag === 'TABLE' ? child : child.querySelector('table');
+            if (table) {
+                textPart += tableToMarkdown(table);
+            } else if (tag === 'UL' || tag === 'OL') {
+                textPart += listToMarkdown(child);
+            } else if (tag === 'PRE' || child.querySelector('code')) {
+                const lang = child.querySelector('.text-text-secondary')?.innerText || "code";
+                const code = child.querySelector('code')?.innerText || child.innerText;
+                textPart += "```" + lang + "\n" + code.trim() + "\n```\n\n";
+            } else if (tag.startsWith('H')) {
+                textPart += "#".repeat(parseInt(tag[1]) || 1) + " " + child.innerText.trim() + "\n\n";
+            } else {
+                const text = child.innerText.trim();
+                if (text) textPart += text + "\n\n";
             }
-        } 
-        else if (assistantContainer) {
-            const modelName = assistantContainer.querySelector('.truncate')?.innerText.trim() || "ASSISTANT";
-            output += `### ${modelName} ###\n`;
+        });
+        return textPart;
+    }
 
-            // A. Extract Thinking Traces
-            const trigger = assistantContainer.querySelector('button[aria-controls^="radix-"]');
-            if (trigger) {
-                const id = trigger.getAttribute('aria-controls');
-                const contentDiv = document.getElementById(id);
-                let thoughtTrace = contentDiv ? contentDiv.textContent.replace(/Thought for \d+ seconds/i, '').trim() : "";
-                if (thoughtTrace) {
-                    output += `<thinking>\n${thoughtTrace}\n</thinking>\n\n`;
+    // 2. Setup
+    const timestamp = new Date().toLocaleString();
+    let output = `# Chatbot Arena Export - ${timestamp}\n\n`;
+
+    // 3. Find the main chat container
+    const chatList = document.querySelector('ol.flex-col-reverse') || document.querySelector('ol');
+    if (!chatList) return console.error("Chat list not found.");
+
+    // Chronological order (Arena uses flex-col-reverse, so we reverse the list)
+    const turns = Array.from(chatList.children).reverse();
+
+    turns.forEach((turn) => {
+        // --- STEP A: Look for User Message ---
+        const userBox = turn.querySelector('.bg-surface-raised');
+        if (userBox && !processedElements.has(userBox)) {
+            const userText = userBox.querySelector('.prose')?.innerText.trim() || userBox.innerText.trim();
+            output += `## USER\n${userText}\n\n---\n\n`;
+            processedElements.add(userBox);
+        }
+
+        // --- STEP B: Look for Assistant Response(s) ---
+        // In Battle Mode, there might be 2 .bg-surface-primary blocks side-by-side
+        const assistantBlocks = Array.from(turn.querySelectorAll('.bg-surface-primary'));
+        
+        assistantBlocks.forEach((block) => {
+            // Check if this specific block was already handled (carousel clones)
+            if (processedElements.has(block)) return;
+
+            const rawModelName = block.querySelector('.truncate')?.innerText.trim() || "Assistant";
+            const proseContent = parseProse(block);
+            
+            // Skip empty boxes (sometimes the Arena has empty placeholder divs)
+            if (!proseContent && !block.querySelector('button[aria-controls^="radix-"]')) return;
+
+            const tagName = toXmlTag(rawModelName);
+            output += `### ${rawModelName}\n<${tagName}>\n\n`;
+
+            // Thinking Trace
+            const thinkBtn = block.querySelector('button[aria-controls^="radix-"]');
+            if (thinkBtn) {
+                const id = thinkBtn.getAttribute('aria-controls');
+                const thinkDiv = document.getElementById(id);
+                if (thinkDiv) {
+                    const trace = thinkDiv.innerText.replace(/Thought for \d+ seconds/i, '').trim();
+                    if (trace) output += `<thinking>\n${trace}\n</thinking>\n\n`;
                 }
             }
 
-            // B. Parse Main Response Content
-            const mainProse = assistantContainer.querySelector('.prose');
-            if (mainProse) {
-                Array.from(mainProse.children).forEach(child => {
-                    const tag = child.tagName;
-                    
-                    // Tables
-                    const table = tag === 'TABLE' ? child : child.querySelector('table');
-                    if (table) {
-                        output += tableToMarkdown(table);
-                    } 
-                    // Lists (Bullets/Numbered)
-                    else if (tag === 'UL' || tag === 'OL') {
-                        output += listToMarkdown(child);
-                    }
-                    // Code Blocks
-                    else if (child.querySelector('[data-code-block="true"]') || tag === 'PRE') {
-                        const lang = child.querySelector('.text-text-secondary')?.innerText || "text";
-                        const code = child.querySelector('code')?.innerText || child.innerText;
-                        output += "```" + lang + "\n" + code.trim() + "\n```\n\n";
-                    } 
-                    // Headers
-                    else if (tag.startsWith('H') && tag.length === 2) {
-                        output += "#".repeat(parseInt(tag[1])) + " " + child.innerText.trim() + "\n\n";
-                    } 
-                    // Text / Paragraphs
-                    else {
-                        const text = child.innerText.trim();
-                        if (text) output += text + "\n\n";
-                    }
-                });
-            }
-
-            output += "=".repeat(30) + "\n\n";
-            messageCount++;
-        }
+            output += proseContent;
+            output += `</${tagName}>\n\n---\n\n`;
+            
+            processedElements.add(block);
+        });
     });
 
-    // 5. Download the formatted context file
-    const blob = new Blob([output], { type: 'text/plain' });
+    // 4. Final Save
+    const blob = new Blob([output], { type: 'text/markdown' });
     const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `LMArena_Universal_Export_${Date.now()}.md`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+})();
