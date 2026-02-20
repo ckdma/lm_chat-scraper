@@ -1,0 +1,112 @@
+(function() {
+    // 1. Generate Header
+    const timestamp = new Date().toLocaleString('en-US', {
+        year: 'numeric', month: 'numeric', day: 'numeric',
+        hour: 'numeric', minute: 'numeric', second: 'numeric',
+        hour12: true
+    });
+    let output = `Z.AI CLEAN EXPORT - ${timestamp}\n` + "=".repeat(50) + "\n\n";
+
+    // 2. Helper: Convert HTML Tables to Markdown
+    function tableToMarkdown(tableEl) {
+        const rows = Array.from(tableEl.querySelectorAll('tr'));
+        let markdownTable = "";
+        rows.forEach((row, index) => {
+            const cells = Array.from(row.querySelectorAll('th, td'));
+            const cellTexts = cells.map(c => c.innerText.trim().replace(/\n/g, ' '));
+            markdownTable += `| ${cellTexts.join(' | ')} |\n`;
+            if (index === 0) {
+                const separator = cellTexts.map(() => '---').join(' | ');
+                markdownTable += `| ${separator} |\n`;
+            }
+        });
+        return markdownTable + "\n";
+    }
+
+    // 3. Helper: Convert HTML Lists to Markdown
+    function listToMarkdown(listEl) {
+        const items = Array.from(listEl.querySelectorAll('li'));
+        const isOrdered = listEl.tagName === 'OL';
+        let markdownList = "";
+        items.forEach((li, index) => {
+            const prefix = isOrdered ? `${index + 1}. ` : "- ";
+            markdownList += `${prefix}${li.innerText.trim()}\n`;
+        });
+        return markdownList + "\n";
+    }
+
+    // 4. Select all message containers
+    const messageContainers = document.querySelectorAll('.flex.flex-col.justify-between.px-5.mb-3');
+    let messageCount = 0;
+
+    messageContainers.forEach((container) => {
+        const userMsg = container.querySelector('.user-message');
+        const assistantMsg = container.querySelector('.chat-assistant');
+
+        // Handle User Messages
+        if (userMsg) {
+            const text = userMsg.querySelector('.whitespace-pre-wrap')?.innerText.trim();
+            if (text) {
+                output += `### USER ###\n${text}\n\n`;
+                messageCount++;
+            }
+        } 
+        
+        // Handle Assistant Messages (Thinking blocks skipped)
+        else if (assistantMsg) {
+            output += `### ASSISTANT ###\n`;
+
+            const contentBody = assistantMsg.querySelector('.markdown-prose');
+            if (contentBody) {
+                Array.from(contentBody.children).forEach(child => {
+                    // SKIP THINKING BLOCKS
+                    if (child.classList.contains('thinking-chain-container') || 
+                        child.querySelector('.thinking-block')) {
+                        return; 
+                    }
+
+                    const tag = child.tagName;
+                    
+                    // 1. Reconstruct CodeBlocks from CodeMirror
+                    const cmContent = child.querySelector('.cm-content');
+                    if (cmContent) {
+                        const langLabel = child.querySelector('.absolute.text-xs')?.innerText.trim() || "";
+                        const lines = Array.from(cmContent.querySelectorAll('.cm-line'))
+                                           .map(line => line.innerText === '\n' ? '' : line.innerText);
+                        const fullCode = lines.join('\n');
+                        output += "```" + langLabel + "\n" + fullCode + "\n```\n\n";
+                    }
+                    // 2. Tables
+                    else if (tag === 'TABLE' || child.querySelector('table')) {
+                        const table = tag === 'TABLE' ? child : child.querySelector('table');
+                        output += tableToMarkdown(table);
+                    } 
+                    // 3. Lists
+                    else if (tag === 'UL' || tag === 'OL') {
+                        output += listToMarkdown(child);
+                    }
+                    // 4. Headers
+                    else if (tag.startsWith('H')) {
+                        output += "#".repeat(parseInt(tag[1])) + " " + child.innerText.trim() + "\n\n";
+                    }
+                    // 5. Normal Text
+                    else {
+                        const text = child.innerText.trim();
+                        if (text) output += text + "\n\n";
+                    }
+                });
+            }
+
+            output += "=".repeat(30) + "\n\n";
+            messageCount++;
+        }
+    });
+
+    // 5. Download
+    const blob = new Blob([output], { type: 'text/plain' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `Zai_Clean_Export.txt`;
+    a.click();
+    console.log(`Success! ${messageCount} messages exported without thinking traces.`);
+})();
